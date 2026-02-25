@@ -64,6 +64,19 @@ function mapDisplayVibration(raw: number): number {
   return Math.round(raw * 100) / 100;
 }
 
+// Display ke liye ek step helper: raw aur previous ke beech ka difference
+// maxDelta se zyada na hone de, taa ke consecutive points me sirf chhota farq aaye.
+function cappedStep(prev: number, raw: number, maxDelta: number): number {
+  const p = mapDisplayVibration(prev);
+  const r = mapDisplayVibration(raw);
+  const diff = r - p;
+  if (Math.abs(diff) <= maxDelta) {
+    return r;
+  }
+  const next = p + Math.sign(diff) * maxDelta;
+  return mapDisplayVibration(next);
+}
+
 /** Lerp between two numbers */
 function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t;
@@ -138,9 +151,9 @@ export function useMotorData() {
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [loopEntries, setLoopEntries] = useState<FirebaseLogEntry[]>([]);
-  const targetMotorDataRef = useRef<MotorData | null>(null);
-  const targetVibrationRef = useRef<number>(0);
 
+  // Logs listener: Firebase ke motor01/logs ko memory me store karte hain (max 500),
+  // baad me frontend inhi values ko loop me chalayega.
   const handleLogsSnapshot = useCallback((logsSnap: { val: () => Record<string, FirebaseLogEntry> | null }) => {
     const logs = logsSnap.val();
     if (!logs || typeof logs !== "object") return;
@@ -149,7 +162,8 @@ export function useMotorData() {
     if (entries.length === 0) return;
 
     const sorted = sortLogEntries(entries);
-    setLoopEntries(sorted.map(([, entry]) => entry));
+    const allEntries = sorted.map(([, entry]) => entry);
+    setLoopEntries(allEntries.slice(-VIBRATION_CHART_POINTS));
   }, []);
 
   const handleLiveReadingSnapshot = useCallback(
@@ -200,109 +214,51 @@ export function useMotorData() {
     }
   }, []);
 
-  // Loop through log entries with smooth interpolation: target updates every 15s,
-  // displayed values lerp toward target every 1.5s so gauges and graph move smoothly.
-  const SMOOTH_MS = 1500;
-  const LOOP_STEP_MS = 15000;
-  // Chhota alpha: har 1.5s pe bahut halka change, 15s ke andar dheere-dheere target tak
-  const LERP_ALPHA = 0.1;
-
+  // Frontend-only looping over existing Firebase logs:
+  // agar loopEntries me values hain to unhe 5s ke interval se cycle karte hain.
   useEffect(() => {
-    // Only run Firebase-driven loop when we have enough history (at least 2 points).
-    if (!loopEntries || loopEntries.length < 2) return;
+    if (!loopEntries || loopEntries.length === 0) return;
 
-    // Graph start par latest chhoti history dikhayen (100 points),
-    // taake nayi values aate waqt waveform naturally continue lage.
-    const total = loopEntries.length;
-    const seedCount = Math.min(100, total);
-    const startIdx = Math.max(0, total - seedCount);
-    const initialSlice = loopEntries.slice(startIdx, total);
-
-    // Raw Firebase vibration values bohot jagged ho sakte hain,
-    // isliye yahan ek chhota low‑pass filter laga kar smooth series seed karte hain.
-    const SMOOTH_SEED_ALPHA = 0.2;
-    const initialVibration = initialSlice.reduce<VibrationDataPoint[]>((acc, entry, idx) => {
-      const raw = mapDisplayVibration(entry.vibration ?? 0);
-      const prev = idx === 0 ? raw : acc[idx - 1].value;
-      const smoothed = prev + (raw - prev) * SMOOTH_SEED_ALPHA;
-      acc.push({ time: idx, value: Math.round(smoothed * 100) / 100 });
-      return acc;
-    }, []);
-
-    const initialEntry = initialSlice[initialSlice.length - 1];
-
-    let index = total - 1;
-    const setTarget = (entry: FirebaseLogEntry) => {
-      const next = parseLogEntry(entry);
-      targetMotorDataRef.current = next;
-      targetVibrationRef.current = entry.vibration ?? 0;
-    };
-
-    setTarget(initialEntry);
-    setMotorData(parseLogEntry(initialEntry));
+    // Seed: latest history ko waveform me dikhado (max 500 points), lekin
+    // consecutive points ka farq chhota rakhen.
+    const seeded = loopEntries.slice(-VIBRATION_CHART_POINTS);
+    const initialVib: VibrationDataPoint[] = [];
+    seeded.forEach((entry, idx) => {
+      const raw = entry.vibration ?? 0;
+      if (idx === 0) {
+        initialVib.push({ time: 0, value: mapDisplayVibration(raw) });
+      } else {
+        const prev = initialVib[initialVib.length - 1].value;
+        const val = cappedStep(prev, raw, 0.25); // max 0.25 ka step
+        initialVib.push({ time: idx, value: val });
+      }
+    });
+    setVibrationData(initialVib);
+    const lastEntry = seeded[seeded.length - 1];
+    setMotorData(parseLogEntry(lastEntry));
     setLastUpdated(new Date());
-    setVibrationData(initialVibration);
 
-    const loopId = window.setInterval(() => {
+    let index = loopEntries.length - 1;
+    const id = window.setInterval(() => {
       index = (index + 1) % loopEntries.length;
-      setTarget(loopEntries[index]);
-    }, LOOP_STEP_MS);
-
-    const smoothId = window.setInterval(() => {
-      const target = targetMotorDataRef.current;
-      if (!target) return;
+      const entry = loopEntries[index];
+      setMotorData((prev) => {
+        const target = parseLogEntry(entry);
+        // Motor parameters ko bhi thoda smooth rakhen (small lerp).
+        return prev ? lerpMotorData(prev, target, 0.2) : target;
+      });
       setLastUpdated(new Date());
-      setMotorData((prev) => (prev ? lerpMotorData(prev, target, LERP_ALPHA) : prev));
       setVibrationData((prev) => {
-        const targetDisplay = mapDisplayVibration(targetVibrationRef.current);
-        const lastVal = prev.length > 0 ? prev[prev.length - 1].value : targetDisplay;
-        const smoothed = lastVal + (targetDisplay - lastVal) * LERP_ALPHA;
-        const next = [...prev, { time: prev.length, value: Math.round(smoothed * 100) / 100 }];
+        const raw = entry.vibration ?? 0;
+        const lastVal = prev.length > 0 ? prev[prev.length - 1].value : mapDisplayVibration(raw);
+        const val = cappedStep(lastVal, raw, 0.25);
+        const next = [...prev, { time: prev.length, value: val }];
         return next.slice(-VIBRATION_CHART_POINTS);
       });
-    }, SMOOTH_MS);
+    }, 5000); // 5 sec ke hisaab se gradual update
 
-    return () => {
-      window.clearInterval(loopId);
-      window.clearInterval(smoothId);
-    };
+    return () => window.clearInterval(id);
   }, [loopEntries]);
-
-  // When Firebase has no logs (e.g. Vercel, first load), fill graph from start and keep updating.
-  const syntheticIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  useEffect(() => {
-    // Synthetic mode kicks in when Firebase has 0 or 1 entries, so we still get a waveform.
-    if (loading || (loopEntries && loopEntries.length > 1)) return;
-    const t = window.setTimeout(() => {
-      if (loopEntries && loopEntries.length > 1) return;
-      const initialCount = 20;
-      const initialVib = Array.from({ length: initialCount }, (_, i) => ({
-        time: i,
-        value: generateSyntheticVibration(i),
-      }));
-      setVibrationData(initialVib);
-      setMotorData(generateSyntheticMotorData(0));
-      setLastUpdated(new Date());
-      let step = VIBRATION_CHART_POINTS;
-      syntheticIntervalRef.current = window.setInterval(() => {
-        step += 1;
-        setMotorData(generateSyntheticMotorData(step));
-        setLastUpdated(new Date());
-        setVibrationData((prev) => {
-          const v = generateSyntheticVibration(step);
-          const next = [...prev, { time: prev.length, value: v }];
-          return next.slice(-VIBRATION_CHART_POINTS);
-        });
-      }, 1500);
-    }, 1800);
-    return () => {
-      clearTimeout(t);
-      if (syntheticIntervalRef.current) {
-        clearInterval(syntheticIntervalRef.current);
-        syntheticIntervalRef.current = null;
-      }
-    };
-  }, [loading, loopEntries]);
 
   useEffect(() => {
     setLoading(true);
@@ -320,21 +276,6 @@ export function useMotorData() {
       logsRef,
       (snap) => {
         setLoading(false);
-        const val = snap.val();
-        if (val != null) {
-          const entries = Object.keys(val as object).length;
-          const hasLive = (val as Record<string, unknown>).entry_live != null;
-          console.log(
-            "%c[Firebase] logs update",
-            "color: #22c55e; font-weight: bold",
-            `(${entries} keys${hasLive ? ", entry_live ✓" : ""})`
-          );
-        } else {
-          console.log(
-            "%c[Firebase] Connected – motor01/logs is empty",
-            "color: #f59e0b; font-weight: bold"
-          );
-        }
         handleLogsSnapshot(snap);
       },
       (err) => {
@@ -357,7 +298,7 @@ export function useMotorData() {
       unsubscribeLogs();
       unsubscribePm();
     };
-  }, [handleLogsSnapshot, handleLiveReadingSnapshot, handlePredictiveSnapshot]);
+  }, [handleLogsSnapshot, handlePredictiveSnapshot]);
 
   return {
     motorData,

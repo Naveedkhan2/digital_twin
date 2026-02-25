@@ -3,8 +3,8 @@ Real-time Motor Data Updater
 - Infinite loop: generates data indefinitely
 - Live updates: motor01/live_reading with latest values for real-time dashboard
 - Logs: motor01/logs/entry_01, entry_02, entry_03... (incrementing, one per cycle)
-- Timing: new value every 20 seconds
-- Data: same random ranges as app.py (I: 60-95, V: 395-410, T1: 45-75, T2: 40-65, etc.)
+- Timing: new value every 5 seconds (small gradual changes)
+- Data: centered around realistic ranges (I: ~72A, V: ~400V, T: ~55°C, etc.) with tiny deltas
 - Startup: clears old logs before beginning
 
 Run: python live_updater.py
@@ -69,7 +69,7 @@ logs_ref = db.reference("motor01/logs")
 logs_ref.delete()
 print("Cleared old logs")
 
-print("Generating data every 20 seconds (Ctrl+C to stop)")
+print("Generating data every 5 seconds (Ctrl+C to stop)")
 print("  - motor01/live_reading: latest values for dashboard")
 print("  - motor01/logs: entry_01, entry_02, entry_03... (incrementing)")
 print()
@@ -77,30 +77,72 @@ print()
 live_ref = db.reference("motor01/live_reading")
 entry_counter = 0
 
-# Same random ranges as app.py
+# Stateful baselines so har step pe sirf chhota +/‑ change aaye (random walk style)
+last_I1 = 72.0
+last_I2 = 72.5
+last_I3 = 71.5
+last_V1 = 400.0
+last_V2 = 401.0
+last_V3 = 399.0
+last_freq = 50.0
+last_pf = 0.9
+last_T1 = 55.0
+last_T2 = 50.0
+last_vib = 2.1
+
+
+def _step(value: float, low: float, high: float, max_delta: float) -> float:
+    """Chhota random step within [low, high], clamp + soft bounce at edges."""
+    delta = random.uniform(-max_delta, max_delta)
+    value += delta
+    if value < low:
+        value = low + (low - value) * 0.3
+    if value > high:
+        value = high - (value - high) * 0.3
+    return round(value, 2)
+
+
 def generate_log_entry(entry_index: int):
+    global last_I1, last_I2, last_I3
+    global last_V1, last_V2, last_V3
+    global last_freq, last_pf, last_T1, last_T2, last_vib
+
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # Vibration ko audio‑style waveform jaisa banane ke liye:
-    # slow trend + thodi high‑freq variation + halka noise
+    # Even smaller, more subtle random walks around baselines
+    last_I1 = _step(last_I1, 60.0, 90.0, 0.25)
+    last_I2 = _step(last_I2, 60.0, 90.0, 0.25)
+    last_I3 = _step(last_I3, 60.0, 90.0, 0.25)
+
+    last_V1 = _step(last_V1, 395.0, 410.0, 0.3)
+    last_V2 = _step(last_V2, 395.0, 410.0, 0.3)
+    last_V3 = _step(last_V3, 395.0, 410.0, 0.3)
+
+    last_freq = _step(last_freq, 49.8, 50.2, 0.005)
+    last_pf = round(max(0.83, min(0.96, last_pf + random.uniform(-0.002, 0.002))), 3)
+
+    last_T1 = _step(last_T1, 45.0, 75.0, 0.2)
+    last_T2 = _step(last_T2, 40.0, 65.0, 0.2)
+
+    # Vibration: sine shape + very small random walk for realistic but gentle waveform
     t = entry_index / 40.0
-    slow = math.sin(2 * math.pi * 0.08 * t)
-    mid = math.sin(2 * math.pi * 0.35 * t)
-    base_vib = 2.2 + 0.4 * slow + 0.25 * mid  # approx 1.5–2.9 range
-    vib_noise = 0.15 * (random.random() - 0.5)
-    vibration = round(base_vib + vib_noise, 2)
+    slow = math.sin(2 * math.pi * 0.06 * t)
+    mid = math.sin(2 * math.pi * 0.32 * t)
+    base_vib = 2.0 + 0.35 * slow + 0.2 * mid
+    last_vib = _step(base_vib, 1.2, 3.0, 0.04)
+    vibration = last_vib
 
     return {
-        "I1": round(random.uniform(60, 95), 2),
-        "I2": round(random.uniform(60, 95), 2),
-        "I3": round(random.uniform(60, 95), 2),
-        "V1": round(random.uniform(395, 410), 2),
-        "V2": round(random.uniform(395, 410), 2),
-        "V3": round(random.uniform(395, 410), 2),
-        "frequency": round(random.uniform(49.8, 50.2), 2),
-        "pf": round(random.uniform(0.83, 0.96), 2),
-        "T1": round(random.uniform(45, 75), 2),
-        "T2": round(random.uniform(40, 65), 2),
+        "I1": last_I1,
+        "I2": last_I2,
+        "I3": last_I3,
+        "V1": last_V1,
+        "V2": last_V2,
+        "V3": last_V3,
+        "frequency": last_freq,
+        "pf": last_pf,
+        "T1": last_T1,
+        "T2": last_T2,
         "vibration": vibration,
         "timestamp": ts,
     }
@@ -129,6 +171,7 @@ try:
             print(f"Updated at {ts} | live_reading ✓ | logs/entry_{entry_counter:02d} ✓")
         except Exception as e:
             print(f"ERROR writing to Firebase: {e}")
-        time.sleep(20)
+        # Har 5 second me chhota, gradual update
+        time.sleep(5)
 except KeyboardInterrupt:
     print("\nStopped.")
