@@ -165,17 +165,28 @@ export function useMotorData() {
   useEffect(() => {
     if (!loopEntries || loopEntries.length === 0) return;
 
-    let index = 0;
+    // Seed graph with existing history so it doesn't start empty.
+    const total = loopEntries.length;
+    const startIdx = Math.max(0, total - VIBRATION_CHART_POINTS);
+    const initialSlice = loopEntries.slice(startIdx, total);
+    const initialVibration = initialSlice.map((entry, idx) => ({
+      time: idx,
+      value: entry.vibration ?? 0,
+    }));
+
+    const initialEntry = initialSlice[initialSlice.length - 1];
+
+    let index = total - 1;
     const setTarget = (entry: FirebaseLogEntry) => {
       const next = parseLogEntry(entry);
       targetMotorDataRef.current = next;
       targetVibrationRef.current = entry.vibration ?? 0;
     };
 
-    setTarget(loopEntries[0]);
-    setMotorData(parseLogEntry(loopEntries[0]));
+    setTarget(initialEntry);
+    setMotorData(parseLogEntry(initialEntry));
     setLastUpdated(new Date());
-    setVibrationData([{ time: 0, value: loopEntries[0].vibration ?? 0 }]);
+    setVibrationData(initialVibration);
 
     const loopId = window.setInterval(() => {
       index = (index + 1) % loopEntries.length;
