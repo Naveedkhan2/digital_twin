@@ -1,0 +1,35 @@
+# Environment
+.venv
+venv
+env
+.env
+.env.local
+*.local
+
+# Firebase credentials - DO NOT COMMIT
+**/motor-f8005-firebase-adminsdk-*.json
+**/*-firebase-adminsdk-*.json
+
+# Python
+__pycache__
+*.py[cod]
+*.pyo
+.Python
+*.so
+
+# Node
+node_modules/
+
+# Build outputs
+dist
+dist-ssr
+
+# IDE / OS
+.vscode
+.idea
+.DS_Store
+*.sw?
+tempCodeRunnerFile.py
+
+# Logs
+*.log
