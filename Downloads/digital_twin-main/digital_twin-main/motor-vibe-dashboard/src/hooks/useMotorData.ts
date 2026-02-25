@@ -13,8 +13,8 @@ import type {
 } from "@/types/motor";
 
 const MOTOR_REF = "motor01";
-/** Number of points shown on vibration graph – more = longer, smoother line for demos */
-const VIBRATION_CHART_POINTS = 200;
+/** Max points on vibration graph – shows all Firebase history up to this cap */
+const VIBRATION_CHART_POINTS = 500;
 
 function parseLogEntry(entry: FirebaseLogEntry): MotorData {
   return {
@@ -94,24 +94,24 @@ function generateSyntheticVibration(step: number): number {
 
 function generateSyntheticMotorData(step: number): MotorData {
   const t = step / 50;
-  const load = 0.8 + 0.4 * Math.sin(t * 2 * Math.PI * 0.2);
-  const base = 72;
+  const load = 0.9 + 0.15 * Math.sin(t * 2 * Math.PI * 0.15);
+  const base = 70;
   const round = (n: number) => Math.round(n * 100) / 100;
   return {
     current: {
-      phaseA: round(base * load * (1 + 0.02 * (Math.random() - 0.5))),
-      phaseB: round(base * 1.02 * load * (1 + 0.02 * (Math.random() - 0.5))),
-      phaseC: round(base * 0.98 * load * (1 + 0.02 * (Math.random() - 0.5))),
+      phaseA: round(base * load * (1 + 0.01 * (Math.random() - 0.5))),
+      phaseB: round(base * 1.02 * load * (1 + 0.01 * (Math.random() - 0.5))),
+      phaseC: round(base * 0.98 * load * (1 + 0.01 * (Math.random() - 0.5))),
     },
     voltage: {
-      phaseA: round(398 + 4 * Math.sin(t * 0.5) + 2 * (Math.random() - 0.5)),
-      phaseB: round(399 + 2 * (Math.random() - 0.5)),
-      phaseC: round(401 + 2 * (Math.random() - 0.5)),
+      phaseA: round(398 + 2 * Math.sin(t * 0.4) + 0.8 * (Math.random() - 0.5)),
+      phaseB: round(399 + 0.8 * (Math.random() - 0.5)),
+      phaseC: round(401 + 0.8 * (Math.random() - 0.5)),
     },
-    frequency: round(50 + 0.05 * (Math.random() - 0.5)),
+    frequency: round(50 + 0.02 * (Math.random() - 0.5)),
     temperature: {
-      t1: round(52 + 8 * Math.sin(t * 0.1) + 1 * (Math.random() - 0.5)),
-      t2: round(48 + 6 * Math.sin(t * 0.12) + 1 * (Math.random() - 0.5)),
+      t1: round(52 + 4 * Math.sin(t * 0.08) + 0.6 * (Math.random() - 0.5)),
+      t2: round(48 + 3 * Math.sin(t * 0.1) + 0.6 * (Math.random() - 0.5)),
     },
   };
 }
@@ -191,24 +191,18 @@ export function useMotorData() {
   // displayed values lerp toward target every 1.5s so gauges and graph move smoothly.
   const SMOOTH_MS = 1500;
   const LOOP_STEP_MS = 15000;
-  const LERP_ALPHA = 0.28;
+  // Smaller alpha => params move more gently between points
+  const LERP_ALPHA = 0.12;
 
   useEffect(() => {
-    if (!loopEntries || loopEntries.length === 0) return;
+    // Only run Firebase-driven loop when we have enough history (at least 2 points).
+    if (!loopEntries || loopEntries.length < 2) return;
 
-    // Seed graph with existing history so it doesn't start empty.
+    // Seed graph with existing Firebase history (up to cap) so it doesn't start empty.
     const total = loopEntries.length;
-    const startIdx = Math.max(0, total - VIBRATION_CHART_POINTS);
-    let initialSlice = loopEntries.slice(startIdx, total);
-
-    // If we have fewer entries than chart points (e.g. only 1 log in Firebase),
-    // pad the front so the graph is fully populated instead of showing a single dot.
-    if (initialSlice.length > 0 && initialSlice.length < VIBRATION_CHART_POINTS) {
-      const padCount = VIBRATION_CHART_POINTS - initialSlice.length;
-      const padEntry = initialSlice[0];
-      const padArray = Array.from({ length: padCount }, () => padEntry);
-      initialSlice = [...padArray, ...initialSlice];
-    }
+    const cap = Math.min(VIBRATION_CHART_POINTS, total);
+    const startIdx = Math.max(0, total - cap);
+    const initialSlice = loopEntries.slice(startIdx, startIdx + cap);
 
     const initialVibration = initialSlice.map((entry, idx) => ({
       time: idx,
@@ -256,9 +250,10 @@ export function useMotorData() {
   // When Firebase has no logs (e.g. Vercel, first load), fill graph from start and keep updating.
   const syntheticIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   useEffect(() => {
-    if (loading || (loopEntries && loopEntries.length > 0)) return;
+    // Synthetic mode kicks in when Firebase has 0 or 1 entries, so we still get a full waveform.
+    if (loading || (loopEntries && loopEntries.length > 1)) return;
     const t = window.setTimeout(() => {
-      if (loopEntries && loopEntries.length > 0) return;
+      if (loopEntries && loopEntries.length > 1) return;
       const initialVib = Array.from({ length: VIBRATION_CHART_POINTS }, (_, i) => ({
         time: i,
         value: generateSyntheticVibration(i),
