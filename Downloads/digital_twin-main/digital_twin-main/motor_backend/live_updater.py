@@ -15,6 +15,7 @@ import random
 import time
 import os
 from datetime import datetime
+import math
 
 # Resolve credential path (works with any filename you gave the key)
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -77,8 +78,18 @@ live_ref = db.reference("motor01/live_reading")
 entry_counter = 0
 
 # Same random ranges as app.py
-def generate_log_entry():
+def generate_log_entry(entry_index: int):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # Vibration ko audio‑style waveform jaisa banane ke liye:
+    # slow trend + thodi high‑freq variation + halka noise
+    t = entry_index / 40.0
+    slow = math.sin(2 * math.pi * 0.08 * t)
+    mid = math.sin(2 * math.pi * 0.35 * t)
+    base_vib = 2.2 + 0.4 * slow + 0.25 * mid  # approx 1.5–2.9 range
+    vib_noise = 0.15 * (random.random() - 0.5)
+    vibration = round(base_vib + vib_noise, 2)
+
     return {
         "I1": round(random.uniform(60, 95), 2),
         "I2": round(random.uniform(60, 95), 2),
@@ -90,14 +101,14 @@ def generate_log_entry():
         "pf": round(random.uniform(0.83, 0.96), 2),
         "T1": round(random.uniform(45, 75), 2),
         "T2": round(random.uniform(40, 65), 2),
-        "vibration": round(random.uniform(1.2, 4.5), 2),
+        "vibration": vibration,
         "timestamp": ts,
     }
 
 try:
     while True:
         try:
-            flat = generate_log_entry()
+            flat = generate_log_entry(entry_counter)
             ts = flat["timestamp"]
 
             # 1. Update live_reading (latest values for real-time dashboard)

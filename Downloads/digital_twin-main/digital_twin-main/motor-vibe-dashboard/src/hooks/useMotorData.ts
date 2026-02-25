@@ -58,6 +58,12 @@ function entriesToVibrationData(entries: [string, FirebaseLogEntry][]): Vibratio
   }));
 }
 
+// Firebase ke raw vibration ko display ke liye ek simple helper:
+// sirf rounding karta hai, koi shift/clamp nahi – line bilkul real data se hi shuru hoti hai.
+function mapDisplayVibration(raw: number): number {
+  return Math.round(raw * 100) / 100;
+}
+
 /** Lerp between two numbers */
 function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t;
@@ -85,33 +91,40 @@ function lerpMotorData(a: MotorData, b: MotorData, t: number): MotorData {
   };
 }
 
-/** Synthetic data when Firebase has no logs – graph full from start and keeps updating */
+/** Synthetic data when Firebase has no logs – clean sine wave like oscilloscope */
 function generateSyntheticVibration(step: number): number {
-  const t = step / 50;
-  const base = 1.8 + 0.8 * Math.sin(t * 2 * Math.PI * 0.15);
-  return Math.round((base + 0.2 * (Math.random() - 0.5)) * 100) / 100;
+  // Step ko thoda slow rakha hai taa ke graph par 2–3 clear hills nazar aayen
+  const t = step / 25;
+  const wave = Math.sin(t * 2 * Math.PI * 0.25); // smooth up/down sine
+  const base = 2.5; // center line
+  const amp = 0.7; // peak distance from center
+  return Math.round((base + amp * wave) * 100) / 100;
 }
 
 function generateSyntheticMotorData(step: number): MotorData {
-  const t = step / 50;
-  const load = 0.9 + 0.15 * Math.sin(t * 2 * Math.PI * 0.15);
-  const base = 70;
+  const t = step / 80;
   const round = (n: number) => Math.round(n * 100) / 100;
+
+  // Baseline values + very small oscillation so change hamesha gradual aur chhota lage
+  const baseCurrent = 72;
+  const currentAmp = 1.0;
+  const wave = Math.sin(t * 2 * Math.PI * 0.2);
+
   return {
     current: {
-      phaseA: round(base * load * (1 + 0.01 * (Math.random() - 0.5))),
-      phaseB: round(base * 1.02 * load * (1 + 0.01 * (Math.random() - 0.5))),
-      phaseC: round(base * 0.98 * load * (1 + 0.01 * (Math.random() - 0.5))),
+      phaseA: round(baseCurrent + currentAmp * wave + 0.2 * (Math.random() - 0.5)),
+      phaseB: round(baseCurrent + 0.6 + currentAmp * 0.9 * wave + 0.2 * (Math.random() - 0.5)),
+      phaseC: round(baseCurrent - 0.6 + currentAmp * 0.8 * wave + 0.2 * (Math.random() - 0.5)),
     },
     voltage: {
-      phaseA: round(398 + 2 * Math.sin(t * 0.4) + 0.8 * (Math.random() - 0.5)),
-      phaseB: round(399 + 0.8 * (Math.random() - 0.5)),
-      phaseC: round(401 + 0.8 * (Math.random() - 0.5)),
+      phaseA: round(400 + 1.0 * Math.sin(t * 0.3) + 0.5 * (Math.random() - 0.5)),
+      phaseB: round(401 + 0.5 * Math.sin(t * 0.25) + 0.5 * (Math.random() - 0.5)),
+      phaseC: round(399 + 0.5 * Math.sin(t * 0.28) + 0.5 * (Math.random() - 0.5)),
     },
-    frequency: round(50 + 0.02 * (Math.random() - 0.5)),
+    frequency: round(50 + 0.01 * Math.sin(t * 0.4)),
     temperature: {
-      t1: round(52 + 4 * Math.sin(t * 0.08) + 0.6 * (Math.random() - 0.5)),
-      t2: round(48 + 3 * Math.sin(t * 0.1) + 0.6 * (Math.random() - 0.5)),
+      t1: round(55 + 2.0 * Math.sin(t * 0.18) + 0.4 * (Math.random() - 0.5)),
+      t2: round(50 + 1.5 * Math.sin(t * 0.16) + 0.4 * (Math.random() - 0.5)),
     },
   };
 }
@@ -191,23 +204,30 @@ export function useMotorData() {
   // displayed values lerp toward target every 1.5s so gauges and graph move smoothly.
   const SMOOTH_MS = 1500;
   const LOOP_STEP_MS = 15000;
-  // Smaller alpha => params move more gently between points
-  const LERP_ALPHA = 0.12;
+  // Chhota alpha: har 1.5s pe bahut halka change, 15s ke andar dheere-dheere target tak
+  const LERP_ALPHA = 0.1;
 
   useEffect(() => {
     // Only run Firebase-driven loop when we have enough history (at least 2 points).
     if (!loopEntries || loopEntries.length < 2) return;
 
-    // Seed graph with existing Firebase history (up to cap) so it doesn't start empty.
+    // Graph start par latest chhoti history dikhayen (100 points),
+    // taake nayi values aate waqt waveform naturally continue lage.
     const total = loopEntries.length;
-    const cap = Math.min(VIBRATION_CHART_POINTS, total);
-    const startIdx = Math.max(0, total - cap);
-    const initialSlice = loopEntries.slice(startIdx, startIdx + cap);
+    const seedCount = Math.min(100, total);
+    const startIdx = Math.max(0, total - seedCount);
+    const initialSlice = loopEntries.slice(startIdx, total);
 
-    const initialVibration = initialSlice.map((entry, idx) => ({
-      time: idx,
-      value: entry.vibration ?? 0,
-    }));
+    // Raw Firebase vibration values bohot jagged ho sakte hain,
+    // isliye yahan ek chhota low‑pass filter laga kar smooth series seed karte hain.
+    const SMOOTH_SEED_ALPHA = 0.2;
+    const initialVibration = initialSlice.reduce<VibrationDataPoint[]>((acc, entry, idx) => {
+      const raw = mapDisplayVibration(entry.vibration ?? 0);
+      const prev = idx === 0 ? raw : acc[idx - 1].value;
+      const smoothed = prev + (raw - prev) * SMOOTH_SEED_ALPHA;
+      acc.push({ time: idx, value: Math.round(smoothed * 100) / 100 });
+      return acc;
+    }, []);
 
     const initialEntry = initialSlice[initialSlice.length - 1];
 
@@ -234,8 +254,9 @@ export function useMotorData() {
       setLastUpdated(new Date());
       setMotorData((prev) => (prev ? lerpMotorData(prev, target, LERP_ALPHA) : prev));
       setVibrationData((prev) => {
-        const lastVal = prev.length > 0 ? prev[prev.length - 1].value : targetVibrationRef.current;
-        const smoothed = lastVal + (targetVibrationRef.current - lastVal) * LERP_ALPHA;
+        const targetDisplay = mapDisplayVibration(targetVibrationRef.current);
+        const lastVal = prev.length > 0 ? prev[prev.length - 1].value : targetDisplay;
+        const smoothed = lastVal + (targetDisplay - lastVal) * LERP_ALPHA;
         const next = [...prev, { time: prev.length, value: Math.round(smoothed * 100) / 100 }];
         return next.slice(-VIBRATION_CHART_POINTS);
       });
@@ -250,11 +271,12 @@ export function useMotorData() {
   // When Firebase has no logs (e.g. Vercel, first load), fill graph from start and keep updating.
   const syntheticIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   useEffect(() => {
-    // Synthetic mode kicks in when Firebase has 0 or 1 entries, so we still get a full waveform.
+    // Synthetic mode kicks in when Firebase has 0 or 1 entries, so we still get a waveform.
     if (loading || (loopEntries && loopEntries.length > 1)) return;
     const t = window.setTimeout(() => {
       if (loopEntries && loopEntries.length > 1) return;
-      const initialVib = Array.from({ length: VIBRATION_CHART_POINTS }, (_, i) => ({
+      const initialCount = 20;
+      const initialVib = Array.from({ length: initialCount }, (_, i) => ({
         time: i,
         value: generateSyntheticVibration(i),
       }));

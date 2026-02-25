@@ -22,8 +22,12 @@ interface PredictiveMaintenanceProps {
 export function PredictiveMaintenance({ motorData, predictiveMaintenance }: PredictiveMaintenanceProps) {
   const [maintenanceData, setMaintenanceData] = useState<MaintenanceItem[]>([]);
   const [lastAnalysis, setLastAnalysis] = useState<Date>(new Date());
+  // Simulation ko throttle karne ke liye – 1 ghanta se pehle dobara analysis nahi chalega
+  const lastSimulatedAtRef = React.useRef<number | null>(null);
+  const ONE_HOUR_MS = 60 * 60 * 1000;
 
   useEffect(() => {
+    // Server-side / Firebase predictive result ko hamesha turant le lo
     if (predictiveMaintenance?.components?.length) {
       setMaintenanceData(
         predictiveMaintenance.components.map((c) => ({
@@ -36,10 +40,45 @@ export function PredictiveMaintenance({ motorData, predictiveMaintenance }: Pred
       if (predictiveMaintenance.lastAnalysis) {
         setLastAnalysis(new Date(predictiveMaintenance.lastAnalysis));
       }
+      lastSimulatedAtRef.current = Date.now();
       return;
     }
 
     if (!motorData) return;
+
+    const now = Date.now();
+
+    // Pehli dafa: hamesha sab components ko HEALTHY dikhao, bas static values ke saath
+    if (!lastSimulatedAtRef.current) {
+      setMaintenanceData([
+        {
+          component: "Bearing Assembly",
+          status: "healthy",
+          remainingLifeHours: 8 * 7 * 24, // 8 weeks
+          recommendation: "No action needed",
+        },
+        {
+          component: "Winding Insulation",
+          status: "healthy",
+          remainingLifeHours: 3 * 7 * 24, // 3 weeks
+          recommendation: "No action needed",
+        },
+        {
+          component: "Phase Balancing",
+          status: "healthy",
+          remainingLifeHours: 5 * 24, // 5 days
+          recommendation: "No action needed",
+        },
+      ]);
+      lastSimulatedAtRef.current = now;
+      setLastAnalysis(new Date(now));
+      return;
+    }
+
+    // Uske baad: sirf tab analysis run karo jab pichle run se 1 ghanta beet chuka ho
+    if (now - lastSimulatedAtRef.current < ONE_HOUR_MS) {
+      return;
+    }
 
     const simulatePredictiveAnalysis = () => {
       const tempStatus: "healthy" | "warning" | "critical" =
@@ -118,7 +157,8 @@ export function PredictiveMaintenance({ motorData, predictiveMaintenance }: Pred
     };
 
     setMaintenanceData(simulatePredictiveAnalysis());
-    setLastAnalysis(new Date());
+    lastSimulatedAtRef.current = now;
+    setLastAnalysis(new Date(now));
   }, [motorData, predictiveMaintenance]);
 
   const getStatusIcon = (status: string) => {

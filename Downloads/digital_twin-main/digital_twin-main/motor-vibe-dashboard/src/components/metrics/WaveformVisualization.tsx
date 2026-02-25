@@ -90,13 +90,46 @@
 
 
 import React, { useEffect, useState } from "react";
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
+import {
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+  type TooltipProps,
+} from "recharts";
 import { AudioWaveform } from "lucide-react";
 
 interface WaveformVisualizationProps {
   data?: { time: number; value: number }[];
   color?: string;
   autoGenerate?: boolean;
+}
+
+// Custom tooltip: sirf value center me dikhayenge, upar wala index (4, 6, ...) hata denge.
+function VibrationTooltip({ active, payload }: TooltipProps<number, string>) {
+  if (!active || !payload || payload.length === 0) return null;
+  const v = payload[0]?.value;
+  if (typeof v !== "number") return null;
+
+  return (
+    <div
+      style={{
+        backgroundColor: "#252D3C",
+        border: "1px solid #333",
+        color: "#fff",
+        padding: "4px 8px",
+        borderRadius: 4,
+        textAlign: "center",
+        pointerEvents: "none",
+      }}
+    >
+      <div style={{ fontSize: 10, opacity: 0.8 }}>Vibration</div>
+      <div style={{ fontSize: 12, fontWeight: 600 }}>{v.toFixed(2)}</div>
+    </div>
+  );
 }
 
 export function WaveformVisualization({
@@ -145,12 +178,10 @@ export function WaveformVisualization({
             margin={{ top: 10, right: 10, left: 0, bottom: 0 }}
           >
             <CartesianGrid strokeDasharray="3 3" stroke="#333" vertical={false} />
-            <XAxis dataKey="time" stroke="#666" />
+            {/* Neeche X-axis ki line rehne di, sirf numbers hide kiye */}
+            <XAxis dataKey="time" stroke="#666" tick={false} />
             <YAxis stroke="#666" />
-            <Tooltip
-              contentStyle={{ backgroundColor: "#252D3C", borderColor: "#333", color: "#fff", maxWidth: "90vw" }}
-              labelStyle={{ color: "#fff" }}
-            />
+            <Tooltip content={<VibrationTooltip />} />
             <Line
               type="monotone"
               dataKey="value"
