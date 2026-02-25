@@ -14,7 +14,7 @@ import type {
 
 const MOTOR_REF = "motor01";
 /** Number of points shown on vibration graph – more = longer, smoother line for demos */
-const VIBRATION_CHART_POINTS = 150;
+const VIBRATION_CHART_POINTS = 200;
 
 function parseLogEntry(entry: FirebaseLogEntry): MotorData {
   return {
