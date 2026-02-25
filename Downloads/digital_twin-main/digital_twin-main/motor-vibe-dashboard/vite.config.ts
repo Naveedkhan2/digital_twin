@@ -11,8 +11,7 @@ export default defineConfig(({ mode }) => ({
   },
   plugins: [
     react(),
-    mode === 'development' &&
-    componentTagger(),
+    mode === "development" && componentTagger(),
   ].filter(Boolean),
   resolve: {
     alias: {
@@ -21,5 +20,9 @@ export default defineConfig(({ mode }) => ({
   },
   optimizeDeps: {
     include: ["firebase/app", "firebase/database"],
+  },
+  build: {
+    // Default 500kb par warning aati hai, is project ke liye limit badha di
+    chunkSizeWarningLimit: 1500,
   },
 }));
