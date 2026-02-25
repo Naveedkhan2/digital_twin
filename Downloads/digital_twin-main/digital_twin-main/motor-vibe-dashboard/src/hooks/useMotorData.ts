@@ -168,7 +168,17 @@ export function useMotorData() {
     // Seed graph with existing history so it doesn't start empty.
     const total = loopEntries.length;
     const startIdx = Math.max(0, total - VIBRATION_CHART_POINTS);
-    const initialSlice = loopEntries.slice(startIdx, total);
+    let initialSlice = loopEntries.slice(startIdx, total);
+
+    // If we have fewer entries than chart points (e.g. only 1 log in Firebase),
+    // pad the front so the graph is fully populated instead of showing a single dot.
+    if (initialSlice.length > 0 && initialSlice.length < VIBRATION_CHART_POINTS) {
+      const padCount = VIBRATION_CHART_POINTS - initialSlice.length;
+      const padEntry = initialSlice[0];
+      const padArray = Array.from({ length: padCount }, () => padEntry);
+      initialSlice = [...padArray, ...initialSlice];
+    }
+
     const initialVibration = initialSlice.map((entry, idx) => ({
       time: idx,
       value: entry.vibration ?? 0,
