@@ -2,7 +2,7 @@
  * Real-time Motor Data Hook
  * Listens to Firebase Realtime Database for live motor parameters
  */
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { ref, onValue } from "firebase/database";
 import { db } from "@/firebase/config";
 import type {
@@ -13,7 +13,8 @@ import type {
 } from "@/types/motor";
 
 const MOTOR_REF = "motor01";
-const VIBRATION_CHART_POINTS = 50;
+/** Number of points shown on vibration graph – more = longer, smoother line for demos */
+const VIBRATION_CHART_POINTS = 150;
 
 function parseLogEntry(entry: FirebaseLogEntry): MotorData {
   return {
@@ -57,6 +58,33 @@ function entriesToVibrationData(entries: [string, FirebaseLogEntry][]): Vibratio
   }));
 }
 
+/** Lerp between two numbers */
+function lerp(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
+}
+
+/** Smoothly interpolate motor data for gradual gauge movement */
+function lerpMotorData(a: MotorData, b: MotorData, t: number): MotorData {
+  const round = (n: number) => Math.round(n * 100) / 100;
+  return {
+    current: {
+      phaseA: round(lerp(a.current.phaseA, b.current.phaseA, t)),
+      phaseB: round(lerp(a.current.phaseB, b.current.phaseB, t)),
+      phaseC: round(lerp(a.current.phaseC, b.current.phaseC, t)),
+    },
+    voltage: {
+      phaseA: round(lerp(a.voltage.phaseA, b.voltage.phaseA, t)),
+      phaseB: round(lerp(a.voltage.phaseB, b.voltage.phaseB, t)),
+      phaseC: round(lerp(a.voltage.phaseC, b.voltage.phaseC, t)),
+    },
+    frequency: round(lerp(a.frequency, b.frequency, t)),
+    temperature: {
+      t1: round(lerp(a.temperature.t1, b.temperature.t1, t)),
+      t2: round(lerp(a.temperature.t2, b.temperature.t2, t)),
+    },
+  };
+}
+
 export function useMotorData() {
   const [motorData, setMotorData] = useState<MotorData | null>(null);
   const [vibrationData, setVibrationData] = useState<VibrationDataPoint[]>([]);
@@ -66,6 +94,8 @@ export function useMotorData() {
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [loopEntries, setLoopEntries] = useState<FirebaseLogEntry[]>([]);
+  const targetMotorDataRef = useRef<MotorData | null>(null);
+  const targetVibrationRef = useRef<number>(0);
 
   const handleLogsSnapshot = useCallback((logsSnap: { val: () => Record<string, FirebaseLogEntry> | null }) => {
     const logs = logsSnap.val();
@@ -126,35 +156,48 @@ export function useMotorData() {
     }
   }, []);
 
-  // Loop through all available log entries on the client so that
-  // the dashboard and 3D model both replay the same 500-point history.
+  // Loop through log entries with smooth interpolation: target updates every 15s,
+  // displayed values lerp toward target every 1.5s so gauges and graph move smoothly.
+  const SMOOTH_MS = 1500;
+  const LOOP_STEP_MS = 15000;
+  const LERP_ALPHA = 0.28;
+
   useEffect(() => {
     if (!loopEntries || loopEntries.length === 0) return;
 
     let index = 0;
-
-    const applyEntry = (entry: FirebaseLogEntry) => {
-      setMotorData(parseLogEntry(entry));
-      setLastUpdated(new Date());
-      setVibrationData((prev) => {
-        const rawVib = entry.vibration ?? 0;
-        const lastValue = prev.length > 0 ? prev[prev.length - 1].value : rawVib;
-        const alpha = 0.3; // smoothing factor – smaller alpha => smoother, fewer spikes
-        const smoothed = lastValue + (rawVib - lastValue) * alpha;
-        const next = [...prev, { time: prev.length, value: Number(smoothed.toFixed(2)) }];
-        return next.slice(-VIBRATION_CHART_POINTS);
-      });
+    const setTarget = (entry: FirebaseLogEntry) => {
+      const next = parseLogEntry(entry);
+      targetMotorDataRef.current = next;
+      targetVibrationRef.current = entry.vibration ?? 0;
     };
 
-    applyEntry(loopEntries[index]);
+    setTarget(loopEntries[0]);
+    setMotorData(parseLogEntry(loopEntries[0]));
+    setLastUpdated(new Date());
+    setVibrationData([{ time: 0, value: loopEntries[0].vibration ?? 0 }]);
 
-    const id = window.setInterval(() => {
+    const loopId = window.setInterval(() => {
       index = (index + 1) % loopEntries.length;
-      applyEntry(loopEntries[index]);
-    }, 15000);
+      setTarget(loopEntries[index]);
+    }, LOOP_STEP_MS);
+
+    const smoothId = window.setInterval(() => {
+      const target = targetMotorDataRef.current;
+      if (!target) return;
+      setLastUpdated(new Date());
+      setMotorData((prev) => (prev ? lerpMotorData(prev, target, LERP_ALPHA) : prev));
+      setVibrationData((prev) => {
+        const lastVal = prev.length > 0 ? prev[prev.length - 1].value : targetVibrationRef.current;
+        const smoothed = lastVal + (targetVibrationRef.current - lastVal) * LERP_ALPHA;
+        const next = [...prev, { time: prev.length, value: Math.round(smoothed * 100) / 100 }];
+        return next.slice(-VIBRATION_CHART_POINTS);
+      });
+    }, SMOOTH_MS);
 
     return () => {
-      window.clearInterval(id);
+      window.clearInterval(loopId);
+      window.clearInterval(smoothId);
     };
   }, [loopEntries]);
 
