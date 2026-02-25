@@ -85,6 +85,37 @@ function lerpMotorData(a: MotorData, b: MotorData, t: number): MotorData {
   };
 }
 
+/** Synthetic data when Firebase has no logs – graph full from start and keeps updating */
+function generateSyntheticVibration(step: number): number {
+  const t = step / 50;
+  const base = 1.8 + 0.8 * Math.sin(t * 2 * Math.PI * 0.15);
+  return Math.round((base + 0.2 * (Math.random() - 0.5)) * 100) / 100;
+}
+
+function generateSyntheticMotorData(step: number): MotorData {
+  const t = step / 50;
+  const load = 0.8 + 0.4 * Math.sin(t * 2 * Math.PI * 0.2);
+  const base = 72;
+  const round = (n: number) => Math.round(n * 100) / 100;
+  return {
+    current: {
+      phaseA: round(base * load * (1 + 0.02 * (Math.random() - 0.5))),
+      phaseB: round(base * 1.02 * load * (1 + 0.02 * (Math.random() - 0.5))),
+      phaseC: round(base * 0.98 * load * (1 + 0.02 * (Math.random() - 0.5))),
+    },
+    voltage: {
+      phaseA: round(398 + 4 * Math.sin(t * 0.5) + 2 * (Math.random() - 0.5)),
+      phaseB: round(399 + 2 * (Math.random() - 0.5)),
+      phaseC: round(401 + 2 * (Math.random() - 0.5)),
+    },
+    frequency: round(50 + 0.05 * (Math.random() - 0.5)),
+    temperature: {
+      t1: round(52 + 8 * Math.sin(t * 0.1) + 1 * (Math.random() - 0.5)),
+      t2: round(48 + 6 * Math.sin(t * 0.12) + 1 * (Math.random() - 0.5)),
+    },
+  };
+}
+
 export function useMotorData() {
   const [motorData, setMotorData] = useState<MotorData | null>(null);
   const [vibrationData, setVibrationData] = useState<VibrationDataPoint[]>([]);
@@ -221,6 +252,40 @@ export function useMotorData() {
       window.clearInterval(smoothId);
     };
   }, [loopEntries]);
+
+  // When Firebase has no logs (e.g. Vercel, first load), fill graph from start and keep updating.
+  const syntheticIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  useEffect(() => {
+    if (loading || (loopEntries && loopEntries.length > 0)) return;
+    const t = window.setTimeout(() => {
+      if (loopEntries && loopEntries.length > 0) return;
+      const initialVib = Array.from({ length: VIBRATION_CHART_POINTS }, (_, i) => ({
+        time: i,
+        value: generateSyntheticVibration(i),
+      }));
+      setVibrationData(initialVib);
+      setMotorData(generateSyntheticMotorData(0));
+      setLastUpdated(new Date());
+      let step = VIBRATION_CHART_POINTS;
+      syntheticIntervalRef.current = window.setInterval(() => {
+        step += 1;
+        setMotorData(generateSyntheticMotorData(step));
+        setLastUpdated(new Date());
+        setVibrationData((prev) => {
+          const v = generateSyntheticVibration(step);
+          const next = [...prev, { time: prev.length, value: v }];
+          return next.slice(-VIBRATION_CHART_POINTS);
+        });
+      }, 1500);
+    }, 1800);
+    return () => {
+      clearTimeout(t);
+      if (syntheticIntervalRef.current) {
+        clearInterval(syntheticIntervalRef.current);
+        syntheticIntervalRef.current = null;
+      }
+    };
+  }, [loading, loopEntries]);
 
   useEffect(() => {
     setLoading(true);
